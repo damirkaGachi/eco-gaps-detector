@@ -7,45 +7,38 @@ from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import normalize
 from docx import Document
 
+# Функция: извлекает числа-нормы (игнорирует номера статей, даты, части больших чисел)
 def extract_numbers(text):
-    """Извлекает только числа-нормы (не номера статей и не числа из дат)"""
-    # Удаляем даты формата ДД.ММ.ГГГГ или ДД.ММ.ГГ
     text = re.sub(r'\b\d{2}\.\d{2}\.(?:\d{4}|\d{2})\b', '', text)
-    
-    # Удаляем номера статей и пунктов
     text = re.sub(r'(?:статья|ст\.|пункт|п\.|раздел|глав[аы]|часть|параграф|§)\s*\d+(?:\.\d+)?', '', text, flags=re.IGNORECASE)
-    
-    # Удаляем числа, которые идут перед словами "март", "февраль", "январь" и т.д.
     text = re.sub(r'\d+\s*(?:январ[ья]|феврал[ья]|март[а]?|апрел[ья]|ма[йя]|июн[ья]|июл[ья]|август[а]?|сентябр[ья]|октябр[ья]|ноябр[ья]|декабр[ья])', '', text, flags=re.IGNORECASE)
-    
-    # Из оставшегося извлекаем числа
-    numbers = [float(x) for x in re.findall(r'\d+(?:\.\d+)?', text) if x]
-    
+    text_fixed = re.sub(r'(\d)\s+(\d)', r'\1\2', text)
+    all_numbers = [float(x) for x in re.findall(r'\d+(?:\.\d+)?', text_fixed) if x]
+    important_words = r'штраф|пен[яю]|тонн|лимит|норматив|сброс|объём|количество|руб'
+    numbers = []
+    for num in all_numbers:
+        num_str = str(int(num)) if num.is_integer() else str(num)
+        context = text[max(0, text.find(num_str)-50):text.find(num_str)+50] if num_str in text else ''
+        if num < 1000 and not re.search(important_words, context, re.IGNORECASE):
+            continue
+        if any(x for x in all_numbers if x == num * 1000 or x == num * 100):
+            continue
+        numbers.append(num)
     return numbers
 
+# Функция: извлекает даты (ДД.ММ.ГГГГ или "1 марта")
 def extract_dates(text):
-    """Извлекает даты в форматах ДД.ММ.ГГГГ или ДД.ММ.ГГ"""
-    # Стандартные даты с точками
     dates = re.findall(r'\b\d{2}\.\d{2}\.(?:\d{4}|\d{2})\b', text)
-    
-    # Даты в формате "1 марта", "15 февраля"
     month_dates = re.findall(r'(\d+)\s*(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)', text, re.IGNORECASE)
-    
-    # Превращаем "1" в "01", "15" в "15" (храним как строки для единообразия)
     for md in month_dates:
         dates.append(f"{md.zfill(2)}.мм.гг")
-    
     return dates
 
+# Функция: определяет модальность (обязательно/разрешено/запрещено)
 def extract_modality(text):
-    """Определяет обязательность действия: должен / может / запрещено"""
-    # Обязательные действия
     mandatory = re.findall(r'(?:обязан|должен|необходимо|требуется|надлежит|следует|обязуется)', text, re.IGNORECASE)
-    # Разрешительные действия
     permissive = re.findall(r'(?:может|вправе|имеет право|допускается|разрешается)', text, re.IGNORECASE)
-    # Запретительные действия
     prohibited = re.findall(r'(?:запрещен|не допускается|не вправе|не может|не должен|нельзя)', text, re.IGNORECASE)
-    
     if mandatory:
         return 'обязательно'
     elif prohibited:
@@ -55,8 +48,38 @@ def extract_modality(text):
     else:
         return 'не указано'
 
+# Функция: извлекает штрафы и меры ответственности
+def extract_liability(text):
+    results = []
+    patterns = [
+        (r'штраф\s*(?:в\s*размере\s*)?(\d+(?:\s*\d+)?)\s*(?:тыс\.?|тысяч)?\s*(?:рублей|руб\.)', 'штраф'),
+        (r'пен[яю]\s*(?:в\s*размере\s*)?(\d+(?:\s*\d+)?)\s*(?:тыс\.?|тысяч)?\s*(?:рублей|руб\.)', 'пеня'),
+        (r'административный\s+штраф\s*(?:в\s*размере\s*)?(\d+(?:\s*\d+)?)\s*(?:тыс\.?|тысяч)?\s*(?:рублей|руб\.)', 'админ_штраф'),
+    ]
+    for pattern, typ in patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        for match in matches:
+            value_str = match.replace(' ', '') if isinstance(match, str) else str(match[0] if isinstance(match, tuple) else match)
+            try:
+                value = float(value_str)
+                if 'тыс' in text[max(0, text.find(str(match))-20):text.find(str(match))+20]:
+                    value = value * 1000
+                results.append({'тип': typ, 'значение': value, 'единица': 'руб', 'категория': 'денежная', 'исходный': match})
+            except:
+                pass
+    measures = {
+        'предупреждение': ('предупреждение', 1),
+        'дисквалификация': ('дисквалификация', 2),
+        'административный арест': ('адм_арест', 3),
+        'приостановление деятельности': ('приостановка', 4),
+        'уголовная ответственность': ('уголовная', 5),
+    }
+    for measure, (code, severity) in measures.items():
+        if re.search(measure, text, re.IGNORECASE):
+            results.append({'тип': 'мера_ответственности', 'значение': code, 'уровень': severity, 'категория': 'неденежная', 'исходный': measure})
+    return results
 
-# ========== 1. ЗАГРУЗКА ТЕКСТА ИЗ ФАЙЛОВ ==========
+# Функция: загружает текст из файла (.txt, .docx)
 def load_text_from_file(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     if ext == '.docx':
@@ -66,6 +89,7 @@ def load_text_from_file(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             return f.read()
 
+# Функция: разбивает текст на фрагменты (чанки) по ~500 символов
 def chunk_text(text, chunk_size=500):
     sentences = text.replace('\n', ' ').split('. ')
     chunks = []
@@ -85,8 +109,7 @@ def chunk_text(text, chunk_size=500):
         chunks.append('. '.join(current_chunk) + '.')
     return chunks if chunks else [text]
 
-
-# ========== 2. ЗАГРУЖАЕМ ВСЕ ПАРЫ ДОКУМЕНТОВ ИЗ ПОДПАПОК ==========
+# ========== ОСНОВНОЙ БЛОК ==========
 folder_path = "./documents"
 
 if not os.path.exists(folder_path):
@@ -94,7 +117,6 @@ if not os.path.exists(folder_path):
     print(f"Создана папка {folder_path}. Создайте внутри подпапки с парами документов.")
     exit(1)
 
-# Получаем список всех подпапок
 subfolders = [f.path for f in os.scandir(folder_path) if f.is_dir()]
 
 if len(subfolders) == 0:
@@ -103,7 +125,6 @@ if len(subfolders) == 0:
 
 print(f"Найдено {len(subfolders)} подпапок. Будет обработано {len(subfolders)} пар документов.\n")
 
-# Для каждой подпапки обрабатываем свою пару документов
 all_results = []
 
 for subfolder in subfolders:
@@ -115,7 +136,6 @@ for subfolder in subfolders:
     all_chunks = []
     chunk_to_file = []
     
-    # Загружаем все файлы в текущей подпапке
     for filename in os.listdir(subfolder):
         if filename.lower().endswith(('.docx', '.txt')):
             filepath = os.path.join(subfolder, filename)
@@ -131,7 +151,6 @@ for subfolder in subfolders:
     
     print(f"  Всего фрагментов: {len(all_chunks)}")
     
-    # Эмбеддинги и кластеризация
     model = SentenceTransformer('cointegrated/rubert-tiny2')
     embeddings = model.encode(all_chunks, show_progress_bar=False)
     embeddings_norm = normalize(embeddings)
@@ -139,7 +158,6 @@ for subfolder in subfolders:
     clustering = DBSCAN(eps=0.45, min_samples=2, metric='cosine')
     clusters = clustering.fit_predict(embeddings_norm)
     
-    # Поиск разрывов (такой же как был)
     gaps = []
     for cluster_id in set(clusters):
         if cluster_id == -1:
@@ -161,47 +179,31 @@ for subfolder in subfolders:
                                 continue
                             max_val = max(abs(ni), abs(nj))
                             if max_val > 0 and abs(ni - nj) / max_val > 0.2:
-                                gaps.append({
-                                    'пара': pair_name,
-                                    'файл_A': cluster_files[i],
-                                    'файл_B': cluster_files[j],
-                                    'фрагмент_A': cluster_texts[i][:300],
-                                    'фрагмент_B': cluster_texts[j][:300],
-                                    'тип': 'числовой',
-                                    'значение_A': ni,
-                                    'значение_B': nj
-                                })
+                                gaps.append({'пара': pair_name, 'файл_A': cluster_files[i], 'файл_B': cluster_files[j], 'фрагмент_A': cluster_texts[i][:300], 'фрагмент_B': cluster_texts[j][:300], 'тип': 'числовой', 'значение_A': ni, 'значение_B': nj})
                 if dates_list[i] and dates_list[j]:
                     for di in dates_list[i]:
                         for dj in dates_list[j]:
                             if di != dj:
-                                gaps.append({
-                                    'пара': pair_name,
-                                    'файл_A': cluster_files[i],
-                                    'файл_B': cluster_files[j],
-                                    'фрагмент_A': cluster_texts[i][:300],
-                                    'фрагмент_B': cluster_texts[j][:300],
-                                    'тип': 'временной',
-                                    'значение_A': di,
-                                    'значение_B': dj
-                                })
+                                gaps.append({'пара': pair_name, 'файл_A': cluster_files[i], 'файл_B': cluster_files[j], 'фрагмент_A': cluster_texts[i][:300], 'фрагмент_B': cluster_texts[j][:300], 'тип': 'временной', 'значение_A': di, 'значение_B': dj})
                 
-                # Модальность
                 mod_i = extract_modality(cluster_texts[i])
                 mod_j = extract_modality(cluster_texts[j])
                 if mod_i != mod_j and mod_i != 'не указано' and mod_j != 'не указано':
-                    gaps.append({
-                        'пара': pair_name,
-                        'файл_A': cluster_files[i],
-                        'файл_B': cluster_files[j],
-                        'фрагмент_A': cluster_texts[i][:300],
-                        'фрагмент_B': cluster_texts[j][:300],
-                        'тип': 'обязательство',
-                        'значение_A': mod_i,
-                        'значение_B': mod_j
-                    })
+                    gaps.append({'пара': pair_name, 'файл_A': cluster_files[i], 'файл_B': cluster_files[j], 'фрагмент_A': cluster_texts[i][:300], 'фрагмент_B': cluster_texts[j][:300], 'тип': 'обязательство', 'значение_A': mod_i, 'значение_B': mod_j})
+                
+                liability_i = extract_liability(cluster_texts[i])
+                liability_j = extract_liability(cluster_texts[j])
+                if liability_i and liability_j:
+                    for li in liability_i:
+                        for lj in liability_j:
+                            if li['категория'] == lj['категория']:
+                                if li['категория'] == 'денежная' and lj['категория'] == 'денежная':
+                                    if li['значение'] != lj['значение']:
+                                        gaps.append({'пара': pair_name, 'файл_A': cluster_files[i], 'файл_B': cluster_files[j], 'фрагмент_A': cluster_texts[i][:300], 'фрагмент_B': cluster_texts[j][:300], 'тип': f"ответственность_{li['тип']}", 'значение_A': f"{li['значение']} {li['единица']}", 'значение_B': f"{lj['значение']} {lj['единица']}"})
+                                elif li['категория'] == 'неденежная' and lj['категория'] == 'неденежная':
+                                    if li['уровень'] != lj['уровень']:
+                                        gaps.append({'пара': pair_name, 'файл_A': cluster_files[i], 'файл_B': cluster_files[j], 'фрагмент_A': cluster_texts[i][:300], 'фрагмент_B': cluster_texts[j][:300], 'тип': 'ответственность_мера', 'значение_A': li['значение'], 'значение_B': lj['значение']})
     
-    # Сохраняем результаты для этой пары
     if gaps:
         df = pd.DataFrame(gaps)
         output_file = f'разрывы_{pair_name}.csv'
@@ -212,7 +214,6 @@ for subfolder in subfolders:
     
     all_results.extend(gaps)
 
-# Итоговый отчёт
 print("=" * 50)
 print("ОБЩИЙ ИТОГ")
 print("=" * 50)
