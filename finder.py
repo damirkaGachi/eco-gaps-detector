@@ -146,7 +146,7 @@ for subfolder in subfolders:
             print(f"  Загружен {filename}: {len(chunks)} фрагментов")
     
     if len(all_chunks) < 2:
-        print(f"  ⚠️ В паре {pair_name} меньше 2 файлов. Пропускаем.\n")
+        print(f"В паре {pair_name} меньше 2 файлов. Пропускаем.\n")
         continue
     
     print(f"  Всего фрагментов: {len(all_chunks)}")
@@ -208,9 +208,9 @@ for subfolder in subfolders:
         df = pd.DataFrame(gaps)
         output_file = f'разрывы_{pair_name}.csv'
         df.to_csv(output_file, index=False, encoding='utf-8-sig')
-        print(f"  ✅ Найдено {len(gaps)} разрывов. Результат в '{output_file}'\n")
+        print(f"Найдено {len(gaps)} разрывов. Результат в '{output_file}'\n")
     else:
-        print(f"  ✅ Разрывов не найдено\n")
+        print(f"Разрывов не найдено\n")
     
     all_results.extend(gaps)
 
